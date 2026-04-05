@@ -16,15 +16,22 @@ const BETKING_URL = 'https://m.betking.com/en-ng/virtuals/instant/leagues/kings-
 const SELECTOR_DEBUG_JS = `
 (function() {
   function getSelector(el) {
-    if (el.id) return '#' + el.id;
+    if (el.id) return '#' + CSS.escape(el.id);
     if (el.className && typeof el.className === 'string') {
-      const classes = el.className.trim().split(/\\s+/).filter(c => c && !c.match(/^[0-9]/)).slice(0, 3).join('.');
-      if (classes) {
-        const sel = el.tagName.toLowerCase() + '.' + classes;
-        if (document.querySelectorAll(sel).length === 1) return sel;
+      // Filter out Tailwind bracket classes and invalid chars
+      const classes = el.className.trim().split(/\\s+/)
+        .filter(c => c && !c.match(/[\\[\\](){}:!@#$%^&*=+<>?/|~]/) && !c.match(/^[0-9]/))
+        .slice(0, 3);
+      if (classes.length > 0) {
+        const sel = el.tagName.toLowerCase() + '.' + classes.join('.');
+        try { if (document.querySelectorAll(sel).length === 1) return sel; } catch(e) {}
       }
     }
     return null;
+  }
+
+  function safeQueryAll(sel) {
+    try { return [...document.querySelectorAll(sel)]; } catch(e) { return []; }
   }
 
   function extractSelectors() {
@@ -44,7 +51,7 @@ const SELECTOR_DEBUG_JS = `
     };
 
     // All buttons
-    document.querySelectorAll('button, [role="button"], a.btn, .btn, [class*="button"], [class*="Button"]').forEach(el => {
+    safeQueryAll('button, [role="button"], a.btn, .btn, [class*="button"], [class*="Button"]').forEach(el => {
       data.buttons.push({
         tag: el.tagName,
         text: (el.textContent || '').trim().substring(0, 60),
@@ -57,7 +64,7 @@ const SELECTOR_DEBUG_JS = `
     });
 
     // All inputs
-    document.querySelectorAll('input, textarea, select').forEach(el => {
+    safeQueryAll('input, textarea, select').forEach(el => {
       data.inputs.push({
         tag: el.tagName,
         type: el.type || null,
@@ -71,7 +78,7 @@ const SELECTOR_DEBUG_JS = `
     });
 
     // Odds elements
-    document.querySelectorAll('[class*="odd"], [class*="Odd"], [class*="price"], [class*="Price"], [class*="coefficient"]').forEach(el => {
+    safeQueryAll('[class*="odd"], [class*="Odd"], [class*="price"], [class*="Price"], [class*="coefficient"]').forEach(el => {
       data.odds.push({
         text: (el.textContent || '').trim().substring(0, 30),
         selector: getSelector(el),
@@ -80,7 +87,7 @@ const SELECTOR_DEBUG_JS = `
     });
 
     // Market/match elements
-    document.querySelectorAll('[class*="match"], [class*="Match"], [class*="event"], [class*="Event"], [class*="fixture"], [class*="league"]').forEach(el => {
+    safeQueryAll('[class*="match"], [class*="Match"], [class*="event"], [class*="Event"], [class*="fixture"], [class*="league"]').forEach(el => {
       if ((el.textContent || '').trim().length < 200) {
         data.markets.push({
           text: (el.textContent || '').trim().substring(0, 100),
@@ -91,7 +98,7 @@ const SELECTOR_DEBUG_JS = `
     });
 
     // Betslip elements
-    document.querySelectorAll('[class*="slip"], [class*="Slip"], [class*="stake"], [class*="Stake"], [class*="coupon"], [class*="Coupon"], [class*="bet-"], [class*="Bet"]').forEach(el => {
+    safeQueryAll('[class*="slip"], [class*="Slip"], [class*="stake"], [class*="Stake"], [class*="coupon"], [class*="Coupon"], [class*="bet-"], [class*="Bet"]').forEach(el => {
       data.betslip.push({
         text: (el.textContent || '').trim().substring(0, 80),
         selector: getSelector(el),
@@ -101,7 +108,7 @@ const SELECTOR_DEBUG_JS = `
     });
 
     // Balance elements
-    document.querySelectorAll('[class*="balance"], [class*="Balance"], [class*="wallet"], [class*="Wallet"], [class*="amount"], [class*="Amount"]').forEach(el => {
+    safeQueryAll('[class*="balance"], [class*="Balance"], [class*="wallet"], [class*="Wallet"], [class*="amount"], [class*="Amount"]').forEach(el => {
       data.balance.push({
         text: (el.textContent || '').trim().substring(0, 50),
         selector: getSelector(el),
@@ -110,7 +117,7 @@ const SELECTOR_DEBUG_JS = `
     });
 
     // Navigation elements
-    document.querySelectorAll('nav, [class*="nav"], [class*="Nav"], [class*="tab"], [class*="Tab"], [class*="menu"], [class*="Menu"]').forEach(el => {
+    safeQueryAll('nav, [class*="nav"], [class*="Nav"], [class*="tab"], [class*="Tab"], [class*="menu"], [class*="Menu"]').forEach(el => {
       if ((el.textContent || '').trim().length < 100) {
         data.navigation.push({
           text: (el.textContent || '').trim().substring(0, 60),
@@ -121,7 +128,7 @@ const SELECTOR_DEBUG_JS = `
     });
 
     // Iframes
-    document.querySelectorAll('iframe').forEach(el => {
+    safeQueryAll('iframe').forEach(el => {
       data.iframes.push({
         src: el.src || null,
         id: el.id || null,
@@ -130,7 +137,7 @@ const SELECTOR_DEBUG_JS = `
     });
 
     // All clickable elements with data attributes
-    document.querySelectorAll('[data-testid], [data-id], [data-event-id], [data-market-id], [data-selection-id]').forEach(el => {
+    safeQueryAll('[data-testid], [data-id], [data-event-id], [data-market-id], [data-selection-id]').forEach(el => {
       const attrs = {};
       for (const attr of el.attributes) {
         if (attr.name.startsWith('data-')) attrs[attr.name] = attr.value;
