@@ -323,18 +323,25 @@ const JS_PLACE_BET = `
 const JS_PROCEED = `
 (function(){
   var found=false;
-  // Strategy 1: exact data-testid (same button for proceed and next round)
   var btn=document.querySelector('[data-testid="instant-bottom-proceed-to-results"]');
-  if(btn){btn.click();found=true;}
-  // Strategy 2: text search
-  if(!found){
+  if(!btn){
     var els=document.querySelectorAll('button,a');
     for(var i=0;i<els.length;i++){
       var t=(els[i].innerText||els[i].textContent||'').trim().toUpperCase();
-      if(t.indexOf('PROCEED TO RESULTS')!==-1||t.indexOf('NEXT ROUND')!==-1){
-        els[i].click();found=true;break;
-      }
+      if(t.indexOf('PROCEED TO RESULTS')!==-1||t.indexOf('NEXT ROUND')!==-1){btn=els[i];break;}
     }
+  }
+  if(btn){
+    found=true;
+    var rect=btn.getBoundingClientRect();
+    var cx=rect.left+rect.width/2,cy=rect.top+rect.height/2;
+    var opts={bubbles:true,cancelable:true,clientX:cx,clientY:cy,view:window};
+    btn.dispatchEvent(new PointerEvent('pointerdown',Object.assign({},opts,{pointerId:1})));
+    btn.dispatchEvent(new MouseEvent('mousedown',opts));
+    btn.dispatchEvent(new PointerEvent('pointerup',Object.assign({},opts,{pointerId:1})));
+    btn.dispatchEvent(new MouseEvent('mouseup',opts));
+    btn.dispatchEvent(new MouseEvent('click',opts));
+    btn.click();
   }
   window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'proceed',ok:found}));
 })();true;`;
@@ -342,19 +349,26 @@ const JS_PROCEED = `
 const JS_NEXT_ROUND = `
 (function(){
   var found=false;
-  // Strategy 1: exact data-testid
   var btn=document.querySelector('[data-testid="instant-bottom-proceed-to-results"]');
-  if(btn){btn.click();found=true;}
-  // Strategy 2: buttons/links with NEXT ROUND text
-  if(!found){
+  if(!btn){
     var els=document.querySelectorAll('button,a');
     for(var i=0;i<els.length;i++){
       var t=(els[i].innerText||els[i].textContent||'').trim().toUpperCase();
-      if(t.indexOf('NEXT ROUND')!==-1){
-        els[i].scrollIntoView({block:'center'});
-        els[i].click();found=true;break;
-      }
+      if(t.indexOf('NEXT ROUND')!==-1){btn=els[i];break;}
     }
+  }
+  if(btn){
+    found=true;
+    btn.scrollIntoView({block:'center'});
+    var rect=btn.getBoundingClientRect();
+    var cx=rect.left+rect.width/2,cy=rect.top+rect.height/2;
+    var opts={bubbles:true,cancelable:true,clientX:cx,clientY:cy,view:window};
+    btn.dispatchEvent(new PointerEvent('pointerdown',Object.assign({},opts,{pointerId:1})));
+    btn.dispatchEvent(new MouseEvent('mousedown',opts));
+    btn.dispatchEvent(new PointerEvent('pointerup',Object.assign({},opts,{pointerId:1})));
+    btn.dispatchEvent(new MouseEvent('mouseup',opts));
+    btn.dispatchEvent(new MouseEvent('click',opts));
+    btn.click();
   }
   window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'next',ok:found}));
 })();true;`;
@@ -400,27 +414,42 @@ const JS_DISMISS_POPUP = `
 const JS_SKIP_ROUND = `
 (function(){
   var found=false;
-  // Find <p> with "Skip Round" text and click its parent <button>
+  var btn=null;
+
+  // Find <p> with "Skip Round" text → get parent <button>
   var ps=document.querySelectorAll('p');
   for(var i=0;i<ps.length;i++){
     if(ps[i].textContent.trim()==='Skip Round'){
-      var btn=ps[i].closest('button')||ps[i].parentElement;
-      btn.scrollIntoView({block:'center'});
-      btn.click();
-      found=true;break;
+      btn=ps[i].closest?ps[i].closest('button'):ps[i].parentElement;
+      break;
     }
   }
+
   // Fallback: search buttons by innerText
-  if(!found){
+  if(!btn){
     var btns=document.querySelectorAll('button');
     for(var i=0;i<btns.length;i++){
       var t=(btns[i].innerText||btns[i].textContent||'').trim().toUpperCase();
-      if(t.indexOf('SKIP ROUND')!==-1){
-        btns[i].scrollIntoView({block:'center'});
-        btns[i].click();found=true;break;
-      }
+      if(t.indexOf('SKIP ROUND')!==-1){btn=btns[i];break;}
     }
   }
+
+  if(btn){
+    found=true;
+    btn.scrollIntoView({block:'center'});
+    // Dispatch full pointer event sequence (React needs this)
+    var rect=btn.getBoundingClientRect();
+    var cx=rect.left+rect.width/2;
+    var cy=rect.top+rect.height/2;
+    var opts={bubbles:true,cancelable:true,clientX:cx,clientY:cy,view:window};
+    btn.dispatchEvent(new PointerEvent('pointerdown',Object.assign({},opts,{pointerId:1})));
+    btn.dispatchEvent(new MouseEvent('mousedown',opts));
+    btn.dispatchEvent(new PointerEvent('pointerup',Object.assign({},opts,{pointerId:1})));
+    btn.dispatchEvent(new MouseEvent('mouseup',opts));
+    btn.dispatchEvent(new MouseEvent('click',opts));
+    btn.click();
+  }
+
   window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'skip',ok:found}));
 })();true;`;
 
