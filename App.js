@@ -45,13 +45,22 @@ const JS_DETECT = `
     var r={type:'bot',action:'detect'};
     var body=document.body?document.body.innerText:'';
 
-    // 1) Win popup
-    var modal=document.querySelector('[role="dialog"]');
+    // 1) Win popup — check for <dialog> element or "You won!" in body
+    var modal=document.querySelector('dialog[open],dialog.dialog,[role="dialog"]');
     if(!modal){
-      var ds=document.querySelectorAll('[class*="modal"],[class*="Modal"],[class*="overlay"],[class*="Overlay"]');
-      for(var i=0;i<ds.length;i++){if(ds[i].offsetParent!==null){modal=ds[i];break;}}
+      var ds=document.querySelectorAll('[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"]');
+      for(var i=0;i<ds.length;i++){if(ds[i].offsetParent!==null||ds[i].tagName==='DIALOG'){modal=ds[i];break;}}
     }
-    if(modal&&modal.offsetParent!==null&&modal.innerText.indexOf('You won!')!==-1){
+    // Also check body text for "You won!" even if no modal found
+    if(!modal&&body.indexOf('You won!')!==-1){
+      // Find the nearest container with "You won!"
+      var all=document.querySelectorAll('div,section,dialog');
+      for(var i=0;i<all.length;i++){
+        var t=(all[i].innerText||'').trim();
+        if(t.indexOf('You won!')!==-1&&t.length<300){modal=all[i];break;}
+      }
+    }
+    if(modal&&(modal.tagName==='DIALOG'||modal.offsetParent!==null)&&(modal.innerText||'').indexOf('You won!')!==-1){
       r.page='popup';
       r.winAmount='';
       var spans=modal.querySelectorAll('*');
@@ -345,36 +354,53 @@ const JS_NEXT_ROUND = `
 const JS_DISMISS_POPUP = `
 (function(){
   var found=false;
-  // Try NEXT ROUND in popup
-  var modal=document.querySelector('[role="dialog"]');
+
+  // Find the popup: <dialog> or container with "You won!"
+  var modal=document.querySelector('dialog[open],dialog.dialog,[role="dialog"]');
   if(!modal){
-    var ds=document.querySelectorAll('[class*="modal"],[class*="Modal"],[class*="overlay"],[class*="Overlay"]');
-    for(var i=0;i<ds.length;i++){if(ds[i].offsetParent!==null&&ds[i].innerText.indexOf('You won!')!==-1){modal=ds[i];break;}}
-  }
-  if(modal){
-    var btns=modal.querySelectorAll('button,a,div,span');
-    for(var i=0;i<btns.length;i++){
-      var t=btns[i].textContent.trim();
-      if(t==='NEXT ROUND'||t.indexOf('NEXT ROUND')!==-1){btns[i].click();found=true;break;}
+    var ds=document.querySelectorAll('[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"],dialog');
+    for(var i=0;i<ds.length;i++){
+      if((ds[i].innerText||'').indexOf('You won!')!==-1){modal=ds[i];break;}
     }
-    // Fallback: close button
+  }
+  if(!modal){
+    // Broad search for You won! container
+    var all=document.querySelectorAll('div,section,dialog');
+    for(var i=0;i<all.length;i++){
+      var t=(all[i].innerText||'').trim();
+      if(t.indexOf('You won!')!==-1&&t.length<300){modal=all[i];break;}
+    }
+  }
+
+  if(modal){
+    // Try NEXT ROUND button inside popup
+    var els=modal.querySelectorAll('button,a,div,span');
+    for(var i=0;i<els.length;i++){
+      var t=(els[i].innerText||els[i].textContent||'').trim().toUpperCase();
+      if(t==='NEXT ROUND'||t.indexOf('NEXT ROUND')!==-1){els[i].click();found=true;break;}
+    }
+    // Try close/X button
     if(!found){
-      var cls=modal.querySelectorAll('button,span,div');
+      var cls=modal.querySelectorAll('button,span,svg,div');
       for(var i=0;i<cls.length;i++){
         var t=cls[i].textContent.trim();
-        if(t==='\\u00d7'||t==='\\u2715'||t==='X'||t==='x'){cls[i].click();found=true;break;}
+        if(t==='\\u00d7'||t==='\\u2715'||t==='X'||t==='x'||t==='\\u2573'){cls[i].click();found=true;break;}
       }
     }
   }
-  // Ultimate fallback: any NEXT ROUND on page
+
+  // Ultimate fallback: click any visible NEXT ROUND on page
   if(!found){
     var all=document.querySelectorAll('button,a,div,span');
     for(var i=0;i<all.length;i++){
-      if(all[i].textContent.trim().indexOf('NEXT ROUND')!==-1&&all[i].offsetParent!==null){
-        all[i].click();found=true;break;
+      var t=(all[i].innerText||'').trim().toUpperCase();
+      if(t.indexOf('NEXT ROUND')!==-1){
+        var rect=all[i].getBoundingClientRect();
+        if(rect.width>30&&rect.height>10){all[i].click();found=true;break;}
       }
     }
   }
+
   window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'dismiss',ok:found}));
 })();true;`;
 
