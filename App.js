@@ -252,18 +252,33 @@ const JS_PLACE_BET = `
 (function(){
   try{
     var found=false;
-    // Search ALL elements for PLACE BET text (might be div, a, span, button)
+    var el=null;
+    // Search ALL elements for PLACE BET text
     var all=document.querySelectorAll('button,div,a,span,[role="button"]');
     for(var i=0;i<all.length;i++){
       var t=all[i].textContent.trim();
       if(t==='PLACE BET'){
-        var rect=all[i].getBoundingClientRect();
-        if(rect.width>50&&rect.height>20){
-          all[i].scrollIntoView({block:'center'});
-          setTimeout(function(){all[i].click();},300);
-          found=true;break;
-        }
+        el=all[i];found=true;break;
       }
+    }
+    if(el){
+      // Log debug info
+      var rect=el.getBoundingClientRect();
+      var info='tag='+el.tagName+' w='+rect.width+' h='+rect.height+' y='+rect.top+' class='+(el.className||'').toString().substring(0,50);
+      window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'placeDebug',info:info}));
+      // Scroll into view and click with multiple strategies
+      el.scrollIntoView({block:'center',behavior:'auto'});
+      // Direct click
+      el.click();
+      // Also dispatch pointer/touch events
+      el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true}));
+      el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true}));
+      el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));
+      // Try touch events too
+      try{
+        el.dispatchEvent(new TouchEvent('touchstart',{bubbles:true}));
+        el.dispatchEvent(new TouchEvent('touchend',{bubbles:true}));
+      }catch(te){}
     }
     setTimeout(function(){
       window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'place',ok:found}));
@@ -546,6 +561,12 @@ export default function App() {
           setCooldown(2000);
           setTimeout(() => inject(jsSetStake(d.current.stake)), 2000);
         }
+        syncUi();
+        return;
+      }
+
+      if (msg.action === 'placeDebug') {
+        addLog(`PLACE BTN: ${msg.info}`);
         syncUi();
         return;
       }
