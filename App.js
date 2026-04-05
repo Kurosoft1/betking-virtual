@@ -7,7 +7,9 @@ import {
   TouchableOpacity,
   SafeAreaView,
   ScrollView,
+  Platform,
 } from 'react-native';
+import Constants from 'expo-constants';
 import { WebView } from 'react-native-webview';
 
 // ─── Config ──────────────────────────────────────────────────
@@ -749,8 +751,10 @@ export default function App() {
   // ─── Render ─────────────────────────────────────────────────
   const pnlColor = ui.pnl >= 0 ? '#00b894' : '#e94560';
 
+  const statusBarH = Constants.statusBarHeight || 0;
+
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={[styles.container, { paddingTop: statusBarH }]}>
       <StatusBar style="light" />
 
       {/* Header */}
@@ -770,9 +774,9 @@ export default function App() {
       <View style={[styles.status, running ? styles.statusOn : styles.statusOff]}>
         <View style={[styles.dot, running ? styles.dotOn : styles.dotOff]} />
         <Text style={styles.statusText}>
-          {ui.state} | {ui.round} | Stake: \u20A6{ui.stake} | P&L:{' '}
+          {ui.state} | {ui.round} | Stake: {'\u20A6'}{ui.stake} | P&L:{' '}
           <Text style={{ color: pnlColor }}>
-            \u20A6{ui.pnl >= 0 ? '+' : ''}
+            {'\u20A6'}{ui.pnl >= 0 ? '+' : ''}
             {ui.pnl.toFixed(1)}
           </Text>
           {' | '}Bets: {ui.roundsBet} W:{ui.wins} L:{ui.losses}
