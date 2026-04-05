@@ -253,33 +253,39 @@ const JS_PLACE_BET = `
   try{
     var found=false;
     var el=null;
-    // Search ALL elements for PLACE BET text
-    var all=document.querySelectorAll('button,div,a,span,[role="button"]');
+
+    // Strategy: find smallest element containing PLACE and BET
+    var all=document.querySelectorAll('*');
+    var bestLen=99999;
+    var candidates=[];
     for(var i=0;i<all.length;i++){
-      var t=all[i].textContent.trim();
-      if(t==='PLACE BET'){
-        el=all[i];found=true;break;
+      var t=(all[i].textContent||'').trim();
+      var tu=t.toUpperCase();
+      if(tu.indexOf('PLACE')!==-1 && tu.indexOf('BET')!==-1 && tu.indexOf('BETSLIP')===-1){
+        candidates.push({el:all[i],len:t.length,tag:all[i].tagName,text:t.substring(0,40)});
+        if(t.length<bestLen){bestLen=t.length;el=all[i];}
       }
     }
+
+    // Log all candidates
+    var dbg=candidates.map(function(c){return c.tag+'['+c.len+']="'+c.text+'"';}).join(' | ');
+    window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'placeDebug',info:dbg||'NONE FOUND'}));
+
     if(el){
-      // Log debug info
-      var rect=el.getBoundingClientRect();
-      var info='tag='+el.tagName+' w='+rect.width+' h='+rect.height+' y='+rect.top+' class='+(el.className||'').toString().substring(0,50);
-      window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'placeDebug',info:info}));
-      // Scroll into view and click with multiple strategies
+      found=true;
       el.scrollIntoView({block:'center',behavior:'auto'});
-      // Direct click
       el.click();
-      // Also dispatch pointer/touch events
-      el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true}));
-      el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true}));
       el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));
-      // Try touch events too
       try{
         el.dispatchEvent(new TouchEvent('touchstart',{bubbles:true}));
         el.dispatchEvent(new TouchEvent('touchend',{bubbles:true}));
       }catch(te){}
+      // Also try clicking parent if it's a span inside a button
+      if(el.parentElement&&(el.parentElement.tagName==='BUTTON'||el.parentElement.tagName==='A')){
+        el.parentElement.click();
+      }
     }
+
     setTimeout(function(){
       window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'place',ok:found}));
     },1500);
