@@ -5,8 +5,9 @@ import {
   Text,
   View,
   TouchableOpacity,
-  SafeAreaView,
+  Switch,
   ScrollView,
+  TextInput,
   Platform,
 } from 'react-native';
 import Constants from 'expo-constants';
@@ -399,14 +400,25 @@ const JS_DISMISS_POPUP = `
 const JS_SKIP_ROUND = `
 (function(){
   var found=false;
-  // Find the button directly — it's a <button> containing <p>Skip Round</p>
-  var btns=document.querySelectorAll('button');
-  for(var i=0;i<btns.length;i++){
-    var t=(btns[i].innerText||btns[i].textContent||'').trim().toUpperCase();
-    if(t.indexOf('SKIP ROUND')!==-1){
-      btns[i].scrollIntoView({block:'center'});
-      btns[i].click();
+  // Find <p> with "Skip Round" text and click its parent <button>
+  var ps=document.querySelectorAll('p');
+  for(var i=0;i<ps.length;i++){
+    if(ps[i].textContent.trim()==='Skip Round'){
+      var btn=ps[i].closest('button')||ps[i].parentElement;
+      btn.scrollIntoView({block:'center'});
+      btn.click();
       found=true;break;
+    }
+  }
+  // Fallback: search buttons by innerText
+  if(!found){
+    var btns=document.querySelectorAll('button');
+    for(var i=0;i<btns.length;i++){
+      var t=(btns[i].innerText||btns[i].textContent||'').trim().toUpperCase();
+      if(t.indexOf('SKIP ROUND')!==-1){
+        btns[i].scrollIntoView({block:'center'});
+        btns[i].click();found=true;break;
+      }
     }
   }
   window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'skip',ok:found}));
@@ -422,8 +434,12 @@ export default function App() {
   const stateStartedAt = useRef(0);
   const betInfo = useRef(null);
   const lastRound = useRef(null);
+  const clockRef = useRef(null);
+  const startTimeRef = useRef(null);
 
   const [running, setRunning] = useState(false);
+  const [stopLoss, setStopLoss] = useState('100');
+  const [elapsed, setElapsed] = useState('00:00:00');
   const [ui, setUi] = useState({
     state: S.IDLE,
     stake: BASE_BET,
@@ -551,8 +567,10 @@ export default function App() {
       }
 
       betInfo.current = null;
+      // Check stop loss after processing results
+      checkStopLoss();
     },
-    [addLog]
+    [addLog, checkStopLoss]
   );
 
   // ─── Handle WebView messages ────────────────────────────────
@@ -830,30 +848,65 @@ export default function App() {
     }
   }, [inject, addLog, setBotState, syncUi]);
 
+  // ─── Timer helper ───────────────────────────────────────────
+  const formatTime = useCallback((ms) => {
+    const s = Math.floor(ms / 1000);
+    const h = String(Math.floor(s / 3600)).padStart(2, '0');
+    const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+    const sec = String(s % 60).padStart(2, '0');
+    return `${h}:${m}:${sec}`;
+  }, []);
+
+  // ─── Stop loss check ─────────────────────────────────────────
+  const stopBot = useCallback(() => {
+    clearInterval(timerRef.current);
+    timerRef.current = null;
+    clearInterval(clockRef.current);
+    clockRef.current = null;
+    setBotState(S.IDLE);
+    setRunning(false);
+    setElapsed('00:00:00');
+    startTimeRef.current = null;
+    syncUi();
+  }, [setBotState, syncUi]);
+
+  const checkStopLoss = useCallback(() => {
+    const limit = parseFloat(stopLoss) || 0;
+    if (limit > 0 && d.current.pnl <= -limit) {
+      addLog(`STOP LOSS hit! P&L: ${d.current.pnl.toFixed(1)} <= -${limit}`);
+      stopBot();
+      return true;
+    }
+    return false;
+  }, [stopLoss, addLog, stopBot]);
+
   // ─── Start / Stop ──────────────────────────────────────────
   const toggleBot = useCallback(() => {
     if (running) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-      setBotState(S.IDLE);
-      setRunning(false);
       addLog('Bot STOPPED');
-      syncUi();
+      stopBot();
     } else {
       setRunning(true);
       setBotState(S.SCANNING);
       cooldownUntil.current = 0;
       lastRound.current = null;
+      startTimeRef.current = Date.now();
       addLog('Bot STARTED');
       syncUi();
       timerRef.current = setInterval(tick, POLL_MS);
+      clockRef.current = setInterval(() => {
+        if (startTimeRef.current) {
+          setElapsed(formatTime(Date.now() - startTimeRef.current));
+        }
+      }, 1000);
       setTimeout(() => inject(JS_DETECT), 500);
     }
-  }, [running, tick, addLog, inject, setBotState, syncUi]);
+  }, [running, tick, addLog, inject, setBotState, syncUi, stopBot, formatTime]);
 
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
+      if (clockRef.current) clearInterval(clockRef.current);
     };
   }, []);
 
@@ -872,29 +925,42 @@ export default function App() {
     <View style={[styles.container, { paddingTop: statusBarH }]}>
       <StatusBar style="light" />
 
-      {/* Header */}
+      {/* Header with Toggle, Stop Loss, Timer */}
       <View style={styles.header}>
-        <Text style={styles.title}>BetKing Virtual</Text>
-        <TouchableOpacity
-          style={[styles.btn, running ? styles.btnStop : styles.btnStart]}
-          onPress={toggleBot}
-        >
-          <Text style={styles.btnText}>
-            {running ? '\u25A0 Stop' : '\u25B6 Start'}
+        <View style={styles.headerRow}>
+          <Switch
+            value={running}
+            onValueChange={toggleBot}
+            trackColor={{ false: '#555', true: '#00b894' }}
+            thumbColor={running ? '#fff' : '#ccc'}
+          />
+          <Text style={[styles.headerLabel, running ? styles.labelOn : styles.labelOff]}>
+            {running ? 'ON' : 'OFF'}
           </Text>
-        </TouchableOpacity>
+          <View style={styles.divider} />
+          <Text style={styles.headerLabel}>SL:</Text>
+          <TextInput
+            style={styles.slInput}
+            value={stopLoss}
+            onChangeText={setStopLoss}
+            keyboardType="numeric"
+            editable={!running}
+            placeholderTextColor="#555"
+          />
+          <View style={styles.divider} />
+          <Text style={styles.timerText}>{elapsed}</Text>
+        </View>
       </View>
 
       {/* Status Bar */}
       <View style={[styles.status, running ? styles.statusOn : styles.statusOff]}>
         <View style={[styles.dot, running ? styles.dotOn : styles.dotOff]} />
         <Text style={styles.statusText}>
-          {ui.state} | {ui.round} | Stake: {'\u20A6'}{ui.stake} | P&L:{' '}
+          {ui.state} | {ui.round} | {'\u20A6'}{ui.stake} | P&L:{' '}
           <Text style={{ color: pnlColor }}>
-            {'\u20A6'}{ui.pnl >= 0 ? '+' : ''}
-            {ui.pnl.toFixed(1)}
+            {'\u20A6'}{ui.pnl >= 0 ? '+' : ''}{ui.pnl.toFixed(1)}
           </Text>
-          {' | '}Bets: {ui.roundsBet} W:{ui.wins} L:{ui.losses}
+          {' '}| B:{ui.roundsBet} W:{ui.wins} L:{ui.losses}
         </Text>
       </View>
 
@@ -936,31 +1002,44 @@ export default function App() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#1a1a2e' },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     backgroundColor: '#16213e',
     borderBottomWidth: 1,
     borderBottomColor: '#0f3460',
   },
-  title: { color: '#e94560', fontSize: 18, fontWeight: '700' },
-  btn: {
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: 6,
-    minWidth: 80,
+  headerRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
   },
-  btnStart: { backgroundColor: '#00b894' },
-  btnStop: { backgroundColor: '#e94560' },
-  btnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  headerLabel: { color: '#888', fontSize: 12, fontWeight: '600' },
+  labelOn: { color: '#00b894' },
+  labelOff: { color: '#e94560' },
+  divider: { width: 1, height: 18, backgroundColor: '#333', marginHorizontal: 2 },
+  slInput: {
+    color: '#fff',
+    backgroundColor: '#0f3460',
+    borderRadius: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    fontSize: 12,
+    width: 55,
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+  timerText: {
+    color: '#e94560',
+    fontSize: 13,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+    marginLeft: 'auto',
+  },
   status: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingVertical: 4,
     gap: 6,
   },
   statusOn: { backgroundColor: '#0a3d2a' },
