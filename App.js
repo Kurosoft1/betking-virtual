@@ -45,22 +45,14 @@ const JS_DETECT = `
     var r={type:'bot',action:'detect'};
     var body=document.body?document.body.innerText:'';
 
-    // 1) Win popup — check for <dialog> element or "You won!" in body
-    var modal=document.querySelector('dialog[open],dialog.dialog,[role="dialog"]');
-    if(!modal){
-      var ds=document.querySelectorAll('[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"]');
-      for(var i=0;i<ds.length;i++){if(ds[i].offsetParent!==null||ds[i].tagName==='DIALOG'){modal=ds[i];break;}}
-    }
-    // Also check body text for "You won!" even if no modal found
+    // 1) Win popup — check <dialog open> or betslip-dialog testid
+    var modal=document.querySelector('dialog[open]');
+    if(!modal) modal=document.querySelector('[data-testid="betslip-dialog"]');
     if(!modal&&body.indexOf('You won!')!==-1){
-      // Find the nearest container with "You won!"
-      var all=document.querySelectorAll('div,section,dialog');
-      for(var i=0;i<all.length;i++){
-        var t=(all[i].innerText||'').trim();
-        if(t.indexOf('You won!')!==-1&&t.length<300){modal=all[i];break;}
-      }
+      var ds=document.querySelectorAll('dialog,[role="dialog"],[class*="modal"],[class*="dialog"]');
+      for(var i=0;i<ds.length;i++){if((ds[i].innerText||'').indexOf('You won!')!==-1){modal=ds[i];break;}}
     }
-    if(modal&&(modal.tagName==='DIALOG'||modal.offsetParent!==null)&&(modal.innerText||'').indexOf('You won!')!==-1){
+    if(modal&&(modal.innerText||'').indexOf('You won!')!==-1){
       r.page='popup';
       r.winAmount='';
       var spans=modal.querySelectorAll('*');
@@ -373,49 +365,34 @@ const JS_DISMISS_POPUP = `
 (function(){
   var found=false;
 
-  // Find the popup: <dialog> or container with "You won!"
-  var modal=document.querySelector('dialog[open],dialog.dialog,[role="dialog"]');
-  if(!modal){
-    var ds=document.querySelectorAll('[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"],dialog');
-    for(var i=0;i<ds.length;i++){
-      if((ds[i].innerText||'').indexOf('You won!')!==-1){modal=ds[i];break;}
-    }
-  }
-  if(!modal){
-    // Broad search for You won! container
-    var all=document.querySelectorAll('div,section,dialog');
-    for(var i=0;i<all.length;i++){
-      var t=(all[i].innerText||'').trim();
-      if(t.indexOf('You won!')!==-1&&t.length<300){modal=all[i];break;}
-    }
+  // Strategy 1: exact data-testid from BetKing DOM
+  var btn=document.querySelector('[data-testid="betslip-dialog-cta-right"]');
+  if(btn){btn.click();found=true;}
+
+  // Strategy 2: close icon
+  if(!found){
+    var close=document.querySelector('[data-testid="betslip-dialog-close-icon"]');
+    if(close){close.click();found=true;}
   }
 
-  if(modal){
-    // Try NEXT ROUND button inside popup
-    var els=modal.querySelectorAll('button,a,div,span');
-    for(var i=0;i<els.length;i++){
-      var t=(els[i].innerText||els[i].textContent||'').trim().toUpperCase();
-      if(t==='NEXT ROUND'||t.indexOf('NEXT ROUND')!==-1){els[i].click();found=true;break;}
-    }
-    // Try close/X button
-    if(!found){
-      var cls=modal.querySelectorAll('button,span,svg,div');
-      for(var i=0;i<cls.length;i++){
-        var t=cls[i].textContent.trim();
-        if(t==='\\u00d7'||t==='\\u2715'||t==='X'||t==='x'||t==='\\u2573'){cls[i].click();found=true;break;}
+  // Strategy 3: find button with "Next Round" inside dialog
+  if(!found){
+    var dialog=document.querySelector('dialog[open],dialog');
+    if(dialog){
+      var btns=dialog.querySelectorAll('button');
+      for(var i=0;i<btns.length;i++){
+        var t=(btns[i].innerText||btns[i].textContent||'').trim().toUpperCase();
+        if(t.indexOf('NEXT ROUND')!==-1){btns[i].click();found=true;break;}
       }
     }
   }
 
-  // Ultimate fallback: click any visible NEXT ROUND on page
+  // Strategy 4: any button with NEXT ROUND on page
   if(!found){
-    var all=document.querySelectorAll('button,a,div,span');
+    var all=document.querySelectorAll('button,a');
     for(var i=0;i<all.length;i++){
       var t=(all[i].innerText||'').trim().toUpperCase();
-      if(t.indexOf('NEXT ROUND')!==-1){
-        var rect=all[i].getBoundingClientRect();
-        if(rect.width>30&&rect.height>10){all[i].click();found=true;break;}
-      }
+      if(t.indexOf('NEXT ROUND')!==-1){all[i].click();found=true;break;}
     }
   }
 
