@@ -343,20 +343,29 @@ const JS_PROCEED = `
 
 const JS_NEXT_ROUND = `
 (function(){
-  var els=document.querySelectorAll('button,a,div,span');
   var found=false;
-  // Find smallest element with "Next Round" text (avoid clicking huge parent)
-  var best=null;var bestLen=99999;
+  // Try buttons and links first (these have the actual event handlers)
+  var els=document.querySelectorAll('button,a');
   for(var i=0;i<els.length;i++){
     var t=(els[i].innerText||els[i].textContent||'').trim().toUpperCase();
     if(t.indexOf('NEXT ROUND')!==-1){
-      var rect=els[i].getBoundingClientRect();
-      if(rect.width>30&&rect.height>10&&t.length<bestLen){
-        bestLen=t.length;best=els[i];
+      els[i].scrollIntoView({block:'center'});
+      els[i].click();
+      found=true;break;
+    }
+  }
+  // Fallback: any element
+  if(!found){
+    var all=document.querySelectorAll('div,span,p');
+    for(var i=0;i<all.length;i++){
+      var t=(all[i].innerText||'').trim().toUpperCase();
+      if(t.indexOf('NEXT ROUND')!==-1&&t.length<30){
+        all[i].click();
+        if(all[i].parentElement) all[i].parentElement.click();
+        found=true;break;
       }
     }
   }
-  if(best){best.click();found=true;}
   window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'next',ok:found}));
 })();true;`;
 
@@ -415,20 +424,16 @@ const JS_DISMISS_POPUP = `
 
 const JS_SKIP_ROUND = `
 (function(){
-  var els=document.querySelectorAll('button,a,div,span');
   var found=false;
-  var best=null;var bestLen=99999;
-  for(var i=0;i<els.length;i++){
-    var t=(els[i].innerText||els[i].textContent||'').trim().toUpperCase();
+  // Find the button directly — it's a <button> containing <p>Skip Round</p>
+  var btns=document.querySelectorAll('button');
+  for(var i=0;i<btns.length;i++){
+    var t=(btns[i].innerText||btns[i].textContent||'').trim().toUpperCase();
     if(t.indexOf('SKIP ROUND')!==-1){
-      if(t.length<bestLen){bestLen=t.length;best=els[i];}
+      btns[i].scrollIntoView({block:'center'});
+      btns[i].click();
+      found=true;break;
     }
-  }
-  if(best){
-    // Click the element and its parent (handler may be on parent)
-    best.click();
-    if(best.parentElement) best.parentElement.click();
-    found=true;
   }
   window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'skip',ok:found}));
 })();true;`;
