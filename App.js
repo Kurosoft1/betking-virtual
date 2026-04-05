@@ -417,12 +417,18 @@ const JS_SKIP_ROUND = `
 (function(){
   var els=document.querySelectorAll('button,a,div,span');
   var found=false;
+  var best=null;var bestLen=99999;
   for(var i=0;i<els.length;i++){
     var t=(els[i].innerText||els[i].textContent||'').trim().toUpperCase();
     if(t.indexOf('SKIP ROUND')!==-1){
-      var rect=els[i].getBoundingClientRect();
-      if(rect.width>30){els[i].click();found=true;break;}
+      if(t.length<bestLen){bestLen=t.length;best=els[i];}
     }
+  }
+  if(best){
+    // Click the element and its parent (handler may be on parent)
+    best.click();
+    if(best.parentElement) best.parentElement.click();
+    found=true;
   }
   window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'skip',ok:found}));
 })();true;`;
@@ -765,9 +771,12 @@ export default function App() {
           }
 
           if (st === S.SCANNING || st === S.WAIT_PAGE) {
-            // Avoid scanning same round twice
+            // If same round as last — skip didn't navigate yet, retry skip
             if (msg.round === lastRound.current) {
-              setCooldown(2000);
+              addLog(`Still on ${msg.round}, retrying skip...`);
+              setBotState(S.SKIPPING);
+              inject(JS_SKIP_ROUND);
+              setCooldown(3000);
               syncUi();
               return;
             }
