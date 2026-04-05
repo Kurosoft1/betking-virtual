@@ -86,13 +86,14 @@ const JS_DETECT = `
     }
 
     // 3) Live play
-    if(body.indexOf('- Live')!==-1&&body.indexOf('PROCEED TO RESULTS')!==-1){
+    var bodyUpper=body.toUpperCase();
+    if(bodyUpper.indexOf('- LIVE')!==-1&&bodyUpper.indexOf('PROCEED TO RESULTS')!==-1){
       r.page='live';
       window.ReactNativeWebView.postMessage(JSON.stringify(r));return;
     }
 
     // 4) Results page
-    if(body.indexOf('NEXT ROUND')!==-1&&body.indexOf('All Fixtures')!==-1){
+    if(bodyUpper.indexOf('NEXT ROUND')!==-1&&body.indexOf('All Fixtures')!==-1){
       r.page='results';
       r.fixtures=[];
       var re=/([A-Z]{3})\\D{0,20}?(\\d+)\\s*[-\\u2013]\\s*(\\d+)\\D{0,20}?([A-Z]{3})/g;
@@ -331,8 +332,10 @@ const JS_PROCEED = `
   var els=document.querySelectorAll('button,a,div,span');
   var found=false;
   for(var i=0;i<els.length;i++){
-    if(els[i].textContent.trim().indexOf('PROCEED TO RESULTS')!==-1&&els[i].offsetParent!==null){
-      els[i].click();found=true;break;
+    var t=(els[i].innerText||els[i].textContent||'').trim().toUpperCase();
+    if(t.indexOf('PROCEED TO RESULTS')!==-1){
+      var rect=els[i].getBoundingClientRect();
+      if(rect.width>30){els[i].click();found=true;break;}
     }
   }
   window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'proceed',ok:found}));
@@ -342,12 +345,18 @@ const JS_NEXT_ROUND = `
 (function(){
   var els=document.querySelectorAll('button,a,div,span');
   var found=false;
+  // Find smallest element with "Next Round" text (avoid clicking huge parent)
+  var best=null;var bestLen=99999;
   for(var i=0;i<els.length;i++){
-    var t=els[i].textContent.trim();
-    if(t.indexOf('NEXT ROUND')!==-1&&els[i].offsetParent!==null){
-      els[i].click();found=true;break;
+    var t=(els[i].innerText||els[i].textContent||'').trim().toUpperCase();
+    if(t.indexOf('NEXT ROUND')!==-1){
+      var rect=els[i].getBoundingClientRect();
+      if(rect.width>30&&rect.height>10&&t.length<bestLen){
+        bestLen=t.length;best=els[i];
+      }
     }
   }
+  if(best){best.click();found=true;}
   window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'next',ok:found}));
 })();true;`;
 
@@ -409,8 +418,10 @@ const JS_SKIP_ROUND = `
   var els=document.querySelectorAll('button,a,div,span');
   var found=false;
   for(var i=0;i<els.length;i++){
-    if(els[i].textContent.trim().indexOf('Skip Round')!==-1&&els[i].offsetParent!==null){
-      els[i].click();found=true;break;
+    var t=(els[i].innerText||els[i].textContent||'').trim().toUpperCase();
+    if(t.indexOf('SKIP ROUND')!==-1){
+      var rect=els[i].getBoundingClientRect();
+      if(rect.width>30){els[i].click();found=true;break;}
     }
   }
   window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'skip',ok:found}));
