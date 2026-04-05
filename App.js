@@ -254,36 +254,50 @@ const JS_PLACE_BET = `
     var found=false;
     var el=null;
 
-    // Strategy: find smallest element containing PLACE and BET
-    var all=document.querySelectorAll('*');
-    var bestLen=99999;
-    var candidates=[];
-    for(var i=0;i<all.length;i++){
-      var t=(all[i].textContent||'').trim();
-      var tu=t.toUpperCase();
-      if(tu.indexOf('PLACE')!==-1 && tu.indexOf('BET')!==-1 && tu.indexOf('BETSLIP')===-1){
-        candidates.push({el:all[i],len:t.length,tag:all[i].tagName,text:t.substring(0,40)});
-        if(t.length<bestLen){bestLen=t.length;el=all[i];}
+    // Strategy 1: data-testid attributes
+    el=document.querySelector('[data-testid*="place-bet"],[data-testid*="placeBet"],[data-testid*="place_bet"],[data-testid*="submit-bet"],[data-testid*="submitBet"]');
+
+    // Strategy 2: innerText search (respects text-transform CSS)
+    if(!el){
+      var all=document.querySelectorAll('button,a,div,span,[role="button"]');
+      for(var i=0;i<all.length;i++){
+        var t=(all[i].innerText||'').trim().toUpperCase();
+        if(t==='PLACE BET'||t==='PLACEBET'){
+          el=all[i];break;
+        }
       }
     }
 
-    // Log all candidates
-    var dbg=candidates.map(function(c){return c.tag+'['+c.len+']="'+c.text+'"';}).join(' | ');
-    window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'placeDebug',info:dbg||'NONE FOUND'}));
+    // Strategy 3: Find largest button in bottom half of viewport (betslip area)
+    if(!el){
+      var btns=document.querySelectorAll('button,a,[role="button"]');
+      var maxArea=0;
+      var vh=window.innerHeight;
+      for(var i=0;i<btns.length;i++){
+        var rect=btns[i].getBoundingClientRect();
+        var area=rect.width*rect.height;
+        // Must be wide (>60% viewport), tall enough, in bottom half
+        if(rect.width>vh*0.5&&rect.height>35&&rect.top>vh*0.5&&area>maxArea){
+          maxArea=area;el=btns[i];
+        }
+      }
+    }
+
+    // Strategy 4: elementFromPoint — PLACE BET is center-bottom of viewport
+    if(!el){
+      var vh=window.innerHeight;
+      var vw=window.innerWidth;
+      el=document.elementFromPoint(vw/2, vh-80);
+    }
+
+    // Log what we found
+    var info=el?('tag='+el.tagName+' inner="'+(el.innerText||'').trim().substring(0,30)+'" text="'+(el.textContent||'').trim().substring(0,30)+'" testid='+(el.getAttribute('data-testid')||'-')+' class='+(el.className||'').toString().substring(0,40)):'NOTHING';
+    window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'placeDebug',info:info}));
 
     if(el){
       found=true;
-      el.scrollIntoView({block:'center',behavior:'auto'});
+      el.scrollIntoView({block:'center'});
       el.click();
-      el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));
-      try{
-        el.dispatchEvent(new TouchEvent('touchstart',{bubbles:true}));
-        el.dispatchEvent(new TouchEvent('touchend',{bubbles:true}));
-      }catch(te){}
-      // Also try clicking parent if it's a span inside a button
-      if(el.parentElement&&(el.parentElement.tagName==='BUTTON'||el.parentElement.tagName==='A')){
-        el.parentElement.click();
-      }
     }
 
     setTimeout(function(){
@@ -677,8 +691,14 @@ export default function App() {
             setBotState(S.SETTING_STAKE);
             inject(jsSetStake(d.current.stake));
             setCooldown(2000);
+          } else if (st === S.PLACING || st === S.WAIT_LIVE) {
+            // Bet wasn't actually placed — retry
+            addLog('Bet not placed yet, retrying...');
+            d.current.roundsBet = Math.max(0, d.current.roundsBet - 1);
+            setBotState(S.PLACING);
+            inject(JS_PLACE_BET);
+            setCooldown(3000);
           } else if (st === S.SCANNING || st === S.WAIT_PAGE) {
-            // Unexpected betslip, wait for it to close
             setCooldown(2000);
           }
           syncUi();
@@ -746,7 +766,7 @@ export default function App() {
     if (st === S.IDLE) return;
     if (Date.now() < cooldownUntil.current) return;
 
-    // Only detect during waiting states
+    // Only detect during waiting/recovery states
     const waitStates = [
       S.SCANNING,
       S.WAIT_PAGE,
@@ -756,6 +776,7 @@ export default function App() {
       S.SKIPPING,
       S.OPENING_SLIP,
       S.SETTING_STAKE,
+      S.PLACING,
     ];
     if (waitStates.includes(st)) {
       inject(JS_DETECT);
