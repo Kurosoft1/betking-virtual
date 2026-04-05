@@ -321,13 +321,18 @@ const JS_PLACE_BET = `
 
 const JS_PROCEED = `
 (function(){
-  var els=document.querySelectorAll('button,a,div,span');
   var found=false;
-  for(var i=0;i<els.length;i++){
-    var t=(els[i].innerText||els[i].textContent||'').trim().toUpperCase();
-    if(t.indexOf('PROCEED TO RESULTS')!==-1){
-      var rect=els[i].getBoundingClientRect();
-      if(rect.width>30){els[i].click();found=true;break;}
+  // Strategy 1: exact data-testid (same button for proceed and next round)
+  var btn=document.querySelector('[data-testid="instant-bottom-proceed-to-results"]');
+  if(btn){btn.click();found=true;}
+  // Strategy 2: text search
+  if(!found){
+    var els=document.querySelectorAll('button,a');
+    for(var i=0;i<els.length;i++){
+      var t=(els[i].innerText||els[i].textContent||'').trim().toUpperCase();
+      if(t.indexOf('PROCEED TO RESULTS')!==-1||t.indexOf('NEXT ROUND')!==-1){
+        els[i].click();found=true;break;
+      }
     }
   }
   window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'proceed',ok:found}));
@@ -336,25 +341,17 @@ const JS_PROCEED = `
 const JS_NEXT_ROUND = `
 (function(){
   var found=false;
-  // Try buttons and links first (these have the actual event handlers)
-  var els=document.querySelectorAll('button,a');
-  for(var i=0;i<els.length;i++){
-    var t=(els[i].innerText||els[i].textContent||'').trim().toUpperCase();
-    if(t.indexOf('NEXT ROUND')!==-1){
-      els[i].scrollIntoView({block:'center'});
-      els[i].click();
-      found=true;break;
-    }
-  }
-  // Fallback: any element
+  // Strategy 1: exact data-testid
+  var btn=document.querySelector('[data-testid="instant-bottom-proceed-to-results"]');
+  if(btn){btn.click();found=true;}
+  // Strategy 2: buttons/links with NEXT ROUND text
   if(!found){
-    var all=document.querySelectorAll('div,span,p');
-    for(var i=0;i<all.length;i++){
-      var t=(all[i].innerText||'').trim().toUpperCase();
-      if(t.indexOf('NEXT ROUND')!==-1&&t.length<30){
-        all[i].click();
-        if(all[i].parentElement) all[i].parentElement.click();
-        found=true;break;
+    var els=document.querySelectorAll('button,a');
+    for(var i=0;i<els.length;i++){
+      var t=(els[i].innerText||els[i].textContent||'').trim().toUpperCase();
+      if(t.indexOf('NEXT ROUND')!==-1){
+        els[i].scrollIntoView({block:'center'});
+        els[i].click();found=true;break;
       }
     }
   }
