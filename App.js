@@ -297,12 +297,19 @@ const JS_PLACE_BET = `
     if(el){
       found=true;
       el.scrollIntoView({block:'center'});
-      el.click();
+      // Click the element AND walk up parents (React handler may be on ancestor)
+      var target=el;
+      for(var p=0;p<5&&target;p++){
+        target.click();
+        target=target.parentElement;
+      }
     }
 
+    // Verify bet was actually placed by checking if betslip closes
     setTimeout(function(){
-      window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'place',ok:found}));
-    },1500);
+      var stillOnSlip=document.body.innerText.indexOf('PLACE BET')!==-1&&document.body.innerText.indexOf('BETSLIP')!==-1;
+      window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'place',ok:found&&!stillOnSlip}));
+    },2000);
   }catch(e){
     window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'place',ok:false,msg:e.message}));
   }
