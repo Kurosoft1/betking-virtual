@@ -251,11 +251,18 @@ function jsSetStake(amount) {
 const JS_PLACE_BET = `
 (function(){
   try{
-    var btns=document.querySelectorAll('button,[role="button"]');
     var found=false;
-    for(var i=0;i<btns.length;i++){
-      if(btns[i].textContent.trim().indexOf('PLACE BET')!==-1&&btns[i].offsetParent!==null&&!btns[i].disabled){
-        btns[i].click();found=true;break;
+    // Search ALL elements for PLACE BET text (might be div, a, span, button)
+    var all=document.querySelectorAll('button,div,a,span,[role="button"]');
+    for(var i=0;i<all.length;i++){
+      var t=all[i].textContent.trim();
+      if(t==='PLACE BET'){
+        var rect=all[i].getBoundingClientRect();
+        if(rect.width>50&&rect.height>20){
+          all[i].scrollIntoView({block:'center'});
+          setTimeout(function(){all[i].click();},300);
+          found=true;break;
+        }
       }
     }
     setTimeout(function(){
