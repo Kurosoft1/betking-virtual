@@ -297,12 +297,32 @@ const JS_PLACE_BET = `
     if(el){
       found=true;
       el.scrollIntoView({block:'center'});
-      // Click the element AND walk up parents (React handler may be on ancestor)
-      var target=el;
-      for(var p=0;p<5&&target;p++){
-        target.click();
-        target=target.parentElement;
+
+      // Find the clickable container: walk up to find a wide parent (the actual button)
+      var btn=el;
+      while(btn.parentElement){
+        var pr=btn.parentElement.getBoundingClientRect();
+        if(pr.width>200&&pr.height>30&&pr.height<80){btn=btn.parentElement;break;}
+        if(btn.parentElement.tagName==='BUTTON'||btn.parentElement.tagName==='A'){btn=btn.parentElement;break;}
+        btn=btn.parentElement;
       }
+
+      // Simulate full pointer event sequence (React listens for these)
+      var rect=btn.getBoundingClientRect();
+      var cx=rect.left+rect.width/2;
+      var cy=rect.top+rect.height/2;
+      var opts={bubbles:true,cancelable:true,clientX:cx,clientY:cy,view:window};
+      btn.dispatchEvent(new PointerEvent('pointerdown',Object.assign({},opts,{pointerId:1})));
+      btn.dispatchEvent(new MouseEvent('mousedown',opts));
+      btn.dispatchEvent(new PointerEvent('pointerup',Object.assign({},opts,{pointerId:1})));
+      btn.dispatchEvent(new MouseEvent('mouseup',opts));
+      btn.dispatchEvent(new MouseEvent('click',opts));
+      btn.click();
+
+      // Log which element we actually clicked
+      window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'placeDebug',
+        info:'CLICKED: tag='+btn.tagName+' class='+(btn.className||'').toString().substring(0,60)+' w='+Math.round(rect.width)+' h='+Math.round(rect.height)
+      }));
     }
 
     // Verify bet was actually placed by checking if betslip closes
