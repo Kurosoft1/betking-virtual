@@ -813,7 +813,7 @@ export default function App() {
         mixedContentMode="compatibility"
         originWhitelist={['*']}
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
