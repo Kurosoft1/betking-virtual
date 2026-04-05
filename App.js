@@ -169,32 +169,47 @@ const JS_OPEN_BETSLIP = `
 (function(){
   try{
     var found=false;
-    // Try the selections bar first
-    var els=document.querySelectorAll('div,button,a');
-    for(var i=0;i<els.length;i++){
-      var t=els[i].textContent||'';
-      if(t.indexOf('Selection')!==-1&&t.indexOf('Odds')!==-1&&els[i].offsetParent!==null){
-        var rect=els[i].getBoundingClientRect();
-        if(rect.height>15&&rect.height<120){els[i].click();found=true;break;}
+
+    // Strategy 1: Click the bottom-nav Betslip icon (most reliable)
+    var nav=document.querySelector('#islands-bottom-nav');
+    if(nav){
+      // Find the anchor/link whose visible label is "Betslip"
+      var links=nav.querySelectorAll('a');
+      for(var i=0;i<links.length;i++){
+        if(links[i].textContent.indexOf('Betslip')!==-1){
+          links[i].click();found=true;break;
+        }
       }
-    }
-    // Fallback: Betslip in bottom nav
-    if(!found){
-      var nav=document.querySelector('#islands-bottom-nav');
-      if(nav){
-        var items=nav.querySelectorAll('a,button,div');
-        for(var i=0;i<items.length;i++){
-          if(items[i].textContent.trim()==='Betslip'){items[i].click();found=true;break;}
+      // If no <a>, try any clickable child
+      if(!found){
+        var ch=nav.children;
+        for(var i=0;i<ch.length;i++){
+          if(ch[i].textContent.indexOf('Betslip')!==-1){
+            ch[i].click();found=true;break;
+          }
         }
       }
     }
-    // Fallback 2: any betslip button
+
+    // Strategy 2: Click the floating selections bar
     if(!found){
-      var btns=document.querySelectorAll('button');
-      for(var i=0;i<btns.length;i++){
-        if(btns[i].textContent.trim()==='Betslip'&&btns[i].offsetParent!==null){btns[i].click();found=true;break;}
+      var all=document.querySelectorAll('div');
+      var best=null;var bestLen=99999;
+      for(var i=0;i<all.length;i++){
+        var t=all[i].textContent||'';
+        if(t.indexOf('Selection')!==-1&&t.indexOf('Odds')!==-1&&all[i].offsetParent!==null){
+          if(t.length<bestLen){bestLen=t.length;best=all[i];}
+        }
       }
+      if(best){best.click();found=true;}
     }
+
+    // Strategy 3: Click the pill betslip button
+    if(!found){
+      var btn=document.querySelector('button.pill.pill-text.pill-text--inherit');
+      if(btn&&btn.offsetParent!==null){btn.click();found=true;}
+    }
+
     setTimeout(function(){
       window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'openSlip',ok:found}));
     },2000);
@@ -500,10 +515,10 @@ export default function App() {
 
       if (msg.action === 'openSlip') {
         if (msg.ok) {
-          addLog('Betslip opened, setting stake...');
-          setBotState(S.SETTING_STAKE);
+          addLog('Betslip clicked, waiting for overlay...');
+          // Don't jump to SETTING_STAKE yet — let the tick detect 'betslip' page
+          setBotState(S.OPENING_SLIP);
           setCooldown(2500);
-          setTimeout(() => inject(jsSetStake(d.current.stake)), 2500);
         } else {
           addLog('Betslip open failed, retrying...');
           setCooldown(2000);
@@ -640,6 +655,15 @@ export default function App() {
         if (page === 'listing') {
           d.current.round = msg.round;
 
+          // Betslip didn't open — retry
+          if (st === S.OPENING_SLIP || st === S.SETTING_STAKE) {
+            addLog('Betslip not open yet, retrying...');
+            inject(JS_OPEN_BETSLIP);
+            setCooldown(3000);
+            syncUi();
+            return;
+          }
+
           if (st === S.SCANNING || st === S.WAIT_PAGE) {
             // Avoid scanning same round twice
             if (msg.round === lastRound.current) {
@@ -696,6 +720,8 @@ export default function App() {
       S.WAIT_RESULTS,
       S.GOING_NEXT,
       S.SKIPPING,
+      S.OPENING_SLIP,
+      S.SETTING_STAKE,
     ];
     if (waitStates.includes(st)) {
       inject(JS_DETECT);
@@ -703,7 +729,7 @@ export default function App() {
     }
 
     // Recovery: if stuck in action state > 15s, force rescan
-    const actionStates = [S.SELECTING, S.OPENING_SLIP, S.SETTING_STAKE, S.PLACING];
+    const actionStates = [S.SELECTING, S.PLACING];
     if (
       actionStates.includes(st) &&
       Date.now() - stateStartedAt.current > 15000
