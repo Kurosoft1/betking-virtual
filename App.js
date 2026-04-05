@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react';
+import { useRef, useState, useCallback, useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import {
   StyleSheet,
@@ -6,253 +6,748 @@ import {
   View,
   TouchableOpacity,
   SafeAreaView,
-  Platform,
+  ScrollView,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 
-const BETKING_URL = 'https://m.betking.com/en-ng/virtuals/instant/leagues/kings-instaleague';
+// ─── Config ──────────────────────────────────────────────────
+const BETKING_URL =
+  'https://m.betking.com/en-ng/virtuals/instant/leagues/kings-instaleague';
+const BASE_BET = 10;
+const BET_STEP = 10;
+const FAV_MIN = 1.93;
+const FAV_MAX = 1.99;
+const DRAW_MIN = 3.2;
+const DRAW_MAX = 3.9;
+const POLL_MS = 3000;
 
-// JavaScript injected into WebView to extract all useful selectors
-const SELECTOR_DEBUG_JS = `
-(function() {
-  function getSelector(el) {
-    if (el.id) return '#' + CSS.escape(el.id);
-    if (el.className && typeof el.className === 'string') {
-      // Filter out Tailwind bracket classes and invalid chars
-      const classes = el.className.trim().split(/\\s+/)
-        .filter(c => c && !c.match(/[\\[\\](){}:!@#$%^&*=+<>?/|~]/) && !c.match(/^[0-9]/))
-        .slice(0, 3);
-      if (classes.length > 0) {
-        const sel = el.tagName.toLowerCase() + '.' + classes.join('.');
-        try { if (document.querySelectorAll(sel).length === 1) return sel; } catch(e) {}
+// ─── Bot States ──────────────────────────────────────────────
+const S = {
+  IDLE: 'IDLE',
+  WAIT_PAGE: 'WAIT_PAGE',
+  SCANNING: 'SCANNING',
+  SELECTING: 'SELECTING',
+  OPENING_SLIP: 'OPENING_SLIP',
+  SETTING_STAKE: 'SETTING_STAKE',
+  PLACING: 'PLACING',
+  WAIT_LIVE: 'WAIT_LIVE',
+  WAIT_RESULTS: 'WAIT_RESULTS',
+  GOING_NEXT: 'GOING_NEXT',
+  SKIPPING: 'SKIPPING',
+};
+
+// ─── Injected JS: Detect Page & Scan ─────────────────────────
+const JS_DETECT = `
+(function(){
+  try{
+    var r={type:'bot',action:'detect'};
+    var body=document.body?document.body.innerText:'';
+
+    // 1) Win popup
+    var modal=document.querySelector('[role="dialog"]');
+    if(!modal){
+      var ds=document.querySelectorAll('[class*="modal"],[class*="Modal"],[class*="overlay"],[class*="Overlay"]');
+      for(var i=0;i<ds.length;i++){if(ds[i].offsetParent!==null){modal=ds[i];break;}}
+    }
+    if(modal&&modal.offsetParent!==null&&modal.innerText.indexOf('You won!')!==-1){
+      r.page='popup';
+      r.winAmount='';
+      var spans=modal.querySelectorAll('*');
+      for(var i=0;i<spans.length;i++){
+        var t=spans[i].textContent.trim();
+        if(t.match(/^[₦N][\\d,.]+$/)){r.winAmount=t;break;}
+      }
+      window.ReactNativeWebView.postMessage(JSON.stringify(r));return;
+    }
+
+    // 2) Betslip overlay
+    if(body.indexOf('PLACE BET')!==-1&&(body.indexOf('BETSLIP')!==-1||body.indexOf('Betslip')!==-1)){
+      r.page='betslip';
+      var inputs=document.querySelectorAll('input');
+      r.stakeVal='';
+      for(var i=0;i<inputs.length;i++){
+        var inp=inputs[i];
+        if(inp.type!=='checkbox'&&inp.type!=='hidden'&&inp.offsetParent!==null){
+          r.stakeVal=inp.value;break;
+        }
+      }
+      window.ReactNativeWebView.postMessage(JSON.stringify(r));return;
+    }
+
+    // 3) Live play
+    if(body.indexOf('- Live')!==-1&&body.indexOf('PROCEED TO RESULTS')!==-1){
+      r.page='live';
+      window.ReactNativeWebView.postMessage(JSON.stringify(r));return;
+    }
+
+    // 4) Results page
+    if(body.indexOf('NEXT ROUND')!==-1&&body.indexOf('All Fixtures')!==-1){
+      r.page='results';
+      r.fixtures=[];
+      var re=/([A-Z]{3})\\D{0,20}?(\\d+)\\s*[-\\u2013]\\s*(\\d+)\\D{0,20}?([A-Z]{3})/g;
+      var m;while((m=re.exec(body))!==null){
+        r.fixtures.push({h:m[1],hs:+m[2],as:+m[3],a:m[4]});
+      }
+      window.ReactNativeWebView.postMessage(JSON.stringify(r));return;
+    }
+
+    // 5) Match listing
+    var roundEl=document.querySelector('[data-testid="league-data-subtext"]');
+    if(roundEl){
+      r.page='listing';
+      r.round=roundEl.textContent.trim();
+      var groups=document.querySelectorAll('[class*="button-group--rounded"]');
+      r.matches=[];
+      for(var g=0;g<groups.length;g++){
+        var btns=groups[g].querySelectorAll('[class*="pill-contained--odd"]');
+        if(btns.length!==3) continue;
+        var odds=[];
+        for(var b=0;b<3;b++) odds.push(parseFloat(btns[b].textContent.trim()));
+        if(odds.some(function(v){return isNaN(v);})) continue;
+        var par=groups[g].parentElement;
+        var tt='';
+        if(par){
+          for(var c=0;c<par.childNodes.length;c++){
+            var ch=par.childNodes[c];
+            if(ch===groups[g]||(ch.contains&&ch.contains(groups[g]))) continue;
+            tt+=(ch.textContent||'').trim()+' ';
+          }
+        }
+        var tm=tt.match(/([A-Z]{3})\\s*[-\\u2013]\\s*([A-Z]{3})/);
+        r.matches.push({idx:g,home:tm?tm[1]:'?',away:tm?tm[2]:'?',odds:odds});
+      }
+      // Find qualified match
+      r.qualified=null;
+      for(var i=0;i<r.matches.length;i++){
+        var mx=r.matches[i];
+        if(mx.odds[1]<${DRAW_MIN}||mx.odds[1]>${DRAW_MAX}) continue;
+        if(mx.odds[0]>=${FAV_MIN}&&mx.odds[0]<=${FAV_MAX}){
+          r.qualified={idx:mx.idx,home:mx.home,away:mx.away,type:'1X',odds:mx.odds};break;
+        }
+        if(mx.odds[2]>=${FAV_MIN}&&mx.odds[2]<=${FAV_MAX}){
+          r.qualified={idx:mx.idx,home:mx.home,away:mx.away,type:'X2',odds:mx.odds};break;
+        }
+      }
+      window.ReactNativeWebView.postMessage(JSON.stringify(r));return;
+    }
+
+    r.page='unknown';
+    window.ReactNativeWebView.postMessage(JSON.stringify(r));
+  }catch(e){
+    window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'detect',page:'error',msg:e.message}));
+  }
+})();true;`;
+
+// ─── Injected JS: Actions ────────────────────────────────────
+
+function jsSelectOdds(groupIdx, type) {
+  const first = type === '1X' ? 0 : 1;
+  const second = type === '1X' ? 1 : 2;
+  return `
+(function(){
+  try{
+    var groups=document.querySelectorAll('[class*="button-group--rounded"]');
+    var g=groups[${groupIdx}];
+    if(!g){window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'select',ok:false,msg:'group not found'}));return;}
+    var b=g.querySelectorAll('[class*="pill-contained--odd"]');
+    if(b.length<3){window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'select',ok:false,msg:'buttons not found'}));return;}
+    g.scrollIntoView({block:'center'});
+    setTimeout(function(){b[${first}].click();},500);
+    setTimeout(function(){b[${second}].click();},1200);
+    setTimeout(function(){
+      window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'select',ok:true}));
+    },1800);
+  }catch(e){
+    window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'select',ok:false,msg:e.message}));
+  }
+})();true;`;
+}
+
+const JS_OPEN_BETSLIP = `
+(function(){
+  try{
+    var found=false;
+    // Try the selections bar first
+    var els=document.querySelectorAll('div,button,a');
+    for(var i=0;i<els.length;i++){
+      var t=els[i].textContent||'';
+      if(t.indexOf('Selection')!==-1&&t.indexOf('Odds')!==-1&&els[i].offsetParent!==null){
+        var rect=els[i].getBoundingClientRect();
+        if(rect.height>15&&rect.height<120){els[i].click();found=true;break;}
       }
     }
-    return null;
-  }
-
-  function safeQueryAll(sel) {
-    try { return [...document.querySelectorAll(sel)]; } catch(e) { return []; }
-  }
-
-  function extractSelectors() {
-    const data = {
-      url: window.location.href,
-      title: document.title,
-      timestamp: new Date().toISOString(),
-      buttons: [],
-      inputs: [],
-      odds: [],
-      markets: [],
-      betslip: [],
-      balance: [],
-      navigation: [],
-      iframes: [],
-      interactable: [],
-    };
-
-    // All buttons
-    safeQueryAll('button, [role="button"], a.btn, .btn, [class*="button"], [class*="Button"]').forEach(el => {
-      data.buttons.push({
-        tag: el.tagName,
-        text: (el.textContent || '').trim().substring(0, 60),
-        selector: getSelector(el),
-        id: el.id || null,
-        class: (el.className || '').toString().substring(0, 80),
-        disabled: el.disabled || false,
-        visible: el.offsetParent !== null,
-      });
-    });
-
-    // All inputs
-    safeQueryAll('input, textarea, select').forEach(el => {
-      data.inputs.push({
-        tag: el.tagName,
-        type: el.type || null,
-        name: el.name || null,
-        placeholder: el.placeholder || null,
-        selector: getSelector(el),
-        id: el.id || null,
-        class: (el.className || '').toString().substring(0, 80),
-        value: el.value || '',
-      });
-    });
-
-    // Odds elements
-    safeQueryAll('[class*="odd"], [class*="Odd"], [class*="price"], [class*="Price"], [class*="coefficient"]').forEach(el => {
-      data.odds.push({
-        text: (el.textContent || '').trim().substring(0, 30),
-        selector: getSelector(el),
-        class: (el.className || '').toString().substring(0, 80),
-      });
-    });
-
-    // Market/match elements
-    safeQueryAll('[class*="match"], [class*="Match"], [class*="event"], [class*="Event"], [class*="fixture"], [class*="league"]').forEach(el => {
-      if ((el.textContent || '').trim().length < 200) {
-        data.markets.push({
-          text: (el.textContent || '').trim().substring(0, 100),
-          selector: getSelector(el),
-          class: (el.className || '').toString().substring(0, 80),
-        });
+    // Fallback: Betslip in bottom nav
+    if(!found){
+      var nav=document.querySelector('#islands-bottom-nav');
+      if(nav){
+        var items=nav.querySelectorAll('a,button,div');
+        for(var i=0;i<items.length;i++){
+          if(items[i].textContent.trim()==='Betslip'){items[i].click();found=true;break;}
+        }
       }
-    });
-
-    // Betslip elements
-    safeQueryAll('[class*="slip"], [class*="Slip"], [class*="stake"], [class*="Stake"], [class*="coupon"], [class*="Coupon"], [class*="bet-"], [class*="Bet"]').forEach(el => {
-      data.betslip.push({
-        text: (el.textContent || '').trim().substring(0, 80),
-        selector: getSelector(el),
-        class: (el.className || '').toString().substring(0, 80),
-        tag: el.tagName,
-      });
-    });
-
-    // Balance elements
-    safeQueryAll('[class*="balance"], [class*="Balance"], [class*="wallet"], [class*="Wallet"], [class*="amount"], [class*="Amount"]').forEach(el => {
-      data.balance.push({
-        text: (el.textContent || '').trim().substring(0, 50),
-        selector: getSelector(el),
-        class: (el.className || '').toString().substring(0, 80),
-      });
-    });
-
-    // Navigation elements
-    safeQueryAll('nav, [class*="nav"], [class*="Nav"], [class*="tab"], [class*="Tab"], [class*="menu"], [class*="Menu"]').forEach(el => {
-      if ((el.textContent || '').trim().length < 100) {
-        data.navigation.push({
-          text: (el.textContent || '').trim().substring(0, 60),
-          selector: getSelector(el),
-          class: (el.className || '').toString().substring(0, 80),
-        });
+    }
+    // Fallback 2: any betslip button
+    if(!found){
+      var btns=document.querySelectorAll('button');
+      for(var i=0;i<btns.length;i++){
+        if(btns[i].textContent.trim()==='Betslip'&&btns[i].offsetParent!==null){btns[i].click();found=true;break;}
       }
-    });
+    }
+    setTimeout(function(){
+      window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'openSlip',ok:found}));
+    },2000);
+  }catch(e){
+    window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'openSlip',ok:false,msg:e.message}));
+  }
+})();true;`;
 
-    // Iframes
-    safeQueryAll('iframe').forEach(el => {
-      data.iframes.push({
-        src: el.src || null,
-        id: el.id || null,
-        class: (el.className || '').toString().substring(0, 80),
-      });
-    });
-
-    // All clickable elements with data attributes
-    safeQueryAll('[data-testid], [data-id], [data-event-id], [data-market-id], [data-selection-id]').forEach(el => {
-      const attrs = {};
-      for (const attr of el.attributes) {
-        if (attr.name.startsWith('data-')) attrs[attr.name] = attr.value;
+function jsSetStake(amount) {
+  return `
+(function(){
+  try{
+    var inputs=document.querySelectorAll('input');
+    var inp=null;
+    for(var i=0;i<inputs.length;i++){
+      if(inputs[i].type!=='checkbox'&&inputs[i].type!=='hidden'&&inputs[i].offsetParent!==null){
+        inp=inputs[i];break;
       }
-      data.interactable.push({
-        tag: el.tagName,
-        text: (el.textContent || '').trim().substring(0, 60),
-        selector: getSelector(el),
-        attrs,
-      });
-    });
-
-    // Cookies
-    data.cookies = document.cookie.split(';').map(c => {
-      const [name, ...rest] = c.trim().split('=');
-      return { name: name.trim(), value: rest.join('=').substring(0, 30) + '...' };
-    });
-
-    return data;
+    }
+    if(!inp){
+      window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'stake',ok:false,msg:'no input found'}));return;
+    }
+    inp.focus();
+    inp.select&&inp.select();
+    var ns=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
+    ns.call(inp,'${amount}');
+    inp.dispatchEvent(new Event('input',{bubbles:true}));
+    inp.dispatchEvent(new Event('change',{bubbles:true}));
+    setTimeout(function(){
+      inp.dispatchEvent(new Event('blur',{bubbles:true}));
+      window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'stake',ok:true,val:inp.value}));
+    },800);
+  }catch(e){
+    window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'stake',ok:false,msg:e.message}));
   }
+})();true;`;
+}
 
-  try {
-    const result = extractSelectors();
-    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'selectors', data: result }));
-  } catch(e) {
-    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'error', message: e.message }));
+const JS_PLACE_BET = `
+(function(){
+  try{
+    var btns=document.querySelectorAll('button,[role="button"]');
+    var found=false;
+    for(var i=0;i<btns.length;i++){
+      if(btns[i].textContent.trim().indexOf('PLACE BET')!==-1&&btns[i].offsetParent!==null&&!btns[i].disabled){
+        btns[i].click();found=true;break;
+      }
+    }
+    setTimeout(function(){
+      window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'place',ok:found}));
+    },1500);
+  }catch(e){
+    window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'place',ok:false,msg:e.message}));
   }
-})();
-true;
-`;
+})();true;`;
+
+const JS_PROCEED = `
+(function(){
+  var els=document.querySelectorAll('button,a,div,span');
+  var found=false;
+  for(var i=0;i<els.length;i++){
+    if(els[i].textContent.trim().indexOf('PROCEED TO RESULTS')!==-1&&els[i].offsetParent!==null){
+      els[i].click();found=true;break;
+    }
+  }
+  window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'proceed',ok:found}));
+})();true;`;
+
+const JS_NEXT_ROUND = `
+(function(){
+  var els=document.querySelectorAll('button,a,div,span');
+  var found=false;
+  for(var i=0;i<els.length;i++){
+    var t=els[i].textContent.trim();
+    if(t.indexOf('NEXT ROUND')!==-1&&els[i].offsetParent!==null){
+      els[i].click();found=true;break;
+    }
+  }
+  window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'next',ok:found}));
+})();true;`;
+
+const JS_DISMISS_POPUP = `
+(function(){
+  var found=false;
+  // Try NEXT ROUND in popup
+  var modal=document.querySelector('[role="dialog"]');
+  if(!modal){
+    var ds=document.querySelectorAll('[class*="modal"],[class*="Modal"],[class*="overlay"],[class*="Overlay"]');
+    for(var i=0;i<ds.length;i++){if(ds[i].offsetParent!==null&&ds[i].innerText.indexOf('You won!')!==-1){modal=ds[i];break;}}
+  }
+  if(modal){
+    var btns=modal.querySelectorAll('button,a,div,span');
+    for(var i=0;i<btns.length;i++){
+      var t=btns[i].textContent.trim();
+      if(t==='NEXT ROUND'||t.indexOf('NEXT ROUND')!==-1){btns[i].click();found=true;break;}
+    }
+    // Fallback: close button
+    if(!found){
+      var cls=modal.querySelectorAll('button,span,div');
+      for(var i=0;i<cls.length;i++){
+        var t=cls[i].textContent.trim();
+        if(t==='\\u00d7'||t==='\\u2715'||t==='X'||t==='x'){cls[i].click();found=true;break;}
+      }
+    }
+  }
+  // Ultimate fallback: any NEXT ROUND on page
+  if(!found){
+    var all=document.querySelectorAll('button,a,div,span');
+    for(var i=0;i<all.length;i++){
+      if(all[i].textContent.trim().indexOf('NEXT ROUND')!==-1&&all[i].offsetParent!==null){
+        all[i].click();found=true;break;
+      }
+    }
+  }
+  window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'dismiss',ok:found}));
+})();true;`;
+
+const JS_SKIP_ROUND = `
+(function(){
+  var els=document.querySelectorAll('button,a,div,span');
+  var found=false;
+  for(var i=0;i<els.length;i++){
+    if(els[i].textContent.trim().indexOf('Skip Round')!==-1&&els[i].offsetParent!==null){
+      els[i].click();found=true;break;
+    }
+  }
+  window.ReactNativeWebView.postMessage(JSON.stringify({type:'bot',action:'skip',ok:found}));
+})();true;`;
+
+// ─── App Component ───────────────────────────────────────────
 
 export default function App() {
-  const webViewRef = useRef(null);
-  const [isRunning, setIsRunning] = useState(false);
-  const [debugInfo, setDebugInfo] = useState(null);
-  const [pageLoaded, setPageLoaded] = useState(false);
+  const wv = useRef(null);
+  const timerRef = useRef(null);
+  const botState = useRef(S.IDLE);
+  const cooldownUntil = useRef(0);
+  const stateStartedAt = useRef(0);
+  const betInfo = useRef(null);
+  const lastRound = useRef(null);
 
-  const handleMessage = useCallback((event) => {
-    try {
-      const msg = JSON.parse(event.nativeEvent.data);
-      if (msg.type === 'selectors') {
-        setDebugInfo(msg.data);
-        console.log('\n========== BETKING SELECTORS DEBUG ==========');
-        console.log('URL:', msg.data.url);
-        console.log('Title:', msg.data.title);
-        console.log('\n--- BUTTONS (' + msg.data.buttons.length + ') ---');
-        msg.data.buttons.forEach((b, i) => {
-          if (b.visible) console.log(`  [${i}] "${b.text}" → ${b.selector || b.class}`);
-        });
-        console.log('\n--- INPUTS (' + msg.data.inputs.length + ') ---');
-        msg.data.inputs.forEach((inp, i) => {
-          console.log(`  [${i}] type=${inp.type} name=${inp.name} placeholder="${inp.placeholder}" → ${inp.selector || inp.id}`);
-        });
-        console.log('\n--- ODDS (' + msg.data.odds.length + ') ---');
-        msg.data.odds.slice(0, 20).forEach((o, i) => {
-          console.log(`  [${i}] "${o.text}" → ${o.selector || o.class}`);
-        });
-        console.log('\n--- MARKETS (' + msg.data.markets.length + ') ---');
-        msg.data.markets.slice(0, 15).forEach((m, i) => {
-          console.log(`  [${i}] "${m.text}" → ${m.selector || m.class}`);
-        });
-        console.log('\n--- BETSLIP (' + msg.data.betslip.length + ') ---');
-        msg.data.betslip.slice(0, 10).forEach((s, i) => {
-          console.log(`  [${i}] "${s.text}" → ${s.selector || s.class}`);
-        });
-        console.log('\n--- BALANCE (' + msg.data.balance.length + ') ---');
-        msg.data.balance.forEach((b, i) => {
-          console.log(`  [${i}] "${b.text}" → ${b.selector || b.class}`);
-        });
-        console.log('\n--- NAVIGATION (' + msg.data.navigation.length + ') ---');
-        msg.data.navigation.slice(0, 10).forEach((n, i) => {
-          console.log(`  [${i}] "${n.text}" → ${n.selector || n.class}`);
-        });
-        console.log('\n--- IFRAMES (' + msg.data.iframes.length + ') ---');
-        msg.data.iframes.forEach((f, i) => {
-          console.log(`  [${i}] src=${f.src} id=${f.id}`);
-        });
-        console.log('\n--- DATA ATTRIBUTES (' + msg.data.interactable.length + ') ---');
-        msg.data.interactable.slice(0, 20).forEach((el, i) => {
-          console.log(`  [${i}] "${el.text}" → ${JSON.stringify(el.attrs)}`);
-        });
-        console.log('\n--- COOKIES (' + msg.data.cookies.length + ') ---');
-        msg.data.cookies.forEach((c, i) => {
-          console.log(`  [${i}] ${c.name} = ${c.value}`);
-        });
-        console.log('==============================================\n');
-      } else if (msg.type === 'error') {
-        console.log('WebView Error:', msg.message);
+  const [running, setRunning] = useState(false);
+  const [ui, setUi] = useState({
+    state: S.IDLE,
+    stake: BASE_BET,
+    pnl: 0,
+    round: '-',
+    log: [],
+    roundsBet: 0,
+    wins: 0,
+    losses: 0,
+  });
+
+  // Mutable bot data (refs to avoid stale closures)
+  const d = useRef({
+    stake: BASE_BET,
+    pnl: 0,
+    round: '-',
+    log: [],
+    roundsBet: 0,
+    wins: 0,
+    losses: 0,
+  });
+
+  const setBotState = useCallback((newState) => {
+    botState.current = newState;
+    stateStartedAt.current = Date.now();
+  }, []);
+
+  const addLog = useCallback((msg) => {
+    const ts = new Date().toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    d.current.log = [`[${ts}] ${msg}`, ...d.current.log.slice(0, 49)];
+  }, []);
+
+  const syncUi = useCallback(() => {
+    setUi({
+      state: botState.current,
+      stake: d.current.stake,
+      pnl: d.current.pnl,
+      round: d.current.round,
+      log: [...d.current.log],
+      roundsBet: d.current.roundsBet,
+      wins: d.current.wins,
+      losses: d.current.losses,
+    });
+  }, []);
+
+  const inject = useCallback((js) => {
+    wv.current?.injectJavaScript(js);
+  }, []);
+
+  const setCooldown = useCallback((ms) => {
+    cooldownUntil.current = Date.now() + ms;
+  }, []);
+
+  // ─── Process results ────────────────────────────────────────
+  const processResults = useCallback(
+    (fixtures) => {
+      const bi = betInfo.current;
+      if (!bi) return;
+
+      const fix = fixtures.find(
+        (f) =>
+          (f.h === bi.home && f.a === bi.away) ||
+          (f.a === bi.home && f.h === bi.away)
+      );
+
+      if (!fix) {
+        addLog('Could not find match in results');
+        betInfo.current = null;
+        return;
       }
-    } catch (e) {
-      console.log('Message parse error:', e.message);
+
+      // Normalize so home/away match our bet
+      const hs = fix.h === bi.home ? fix.hs : fix.as;
+      const as = fix.h === bi.home ? fix.as : fix.hs;
+      addLog(`Result: ${bi.home} ${hs} - ${as} ${bi.away}`);
+
+      let outcome;
+      if (bi.type === '1X') {
+        if (hs > as) outcome = 'fav';
+        else if (hs === as) outcome = 'draw';
+        else outcome = 'lost';
+      } else {
+        if (as > hs) outcome = 'fav';
+        else if (hs === as) outcome = 'draw';
+        else outcome = 'lost';
+      }
+
+      const stake = d.current.stake;
+      let profit;
+      if (outcome === 'fav') {
+        const favOdd = bi.type === '1X' ? bi.odds[0] : bi.odds[2];
+        profit = stake * favOdd - stake * 2;
+        addLog(
+          `Fav won (${bi.type === '1X' ? 'Home' : 'Away'}). Net: ${profit >= 0 ? '+' : ''}${profit.toFixed(2)}`
+        );
+      } else if (outcome === 'draw') {
+        profit = stake * bi.odds[1] - stake * 2;
+        addLog(`DRAW WON! Net: +${profit.toFixed(2)}`);
+      } else {
+        profit = -(stake * 2);
+        addLog(`Both LOST. Net: ${profit.toFixed(2)}`);
+      }
+
+      d.current.pnl += profit;
+      addLog(`P&L: ${d.current.pnl >= 0 ? '+' : ''}${d.current.pnl.toFixed(2)}`);
+
+      // Staking logic
+      if (outcome === 'lost') {
+        d.current.stake += BET_STEP;
+        d.current.losses++;
+        addLog(`Stake increased to ${d.current.stake}`);
+      } else if (outcome === 'draw') {
+        d.current.wins++;
+        if (d.current.pnl > 0) {
+          d.current.stake = BASE_BET;
+          addLog('P&L positive - reset to base stake');
+        }
+      } else {
+        // fav won — small loss, keep stake
+        d.current.losses++;
+      }
+
+      betInfo.current = null;
+    },
+    [addLog]
+  );
+
+  // ─── Handle WebView messages ────────────────────────────────
+  const handleMessage = useCallback(
+    (event) => {
+      let msg;
+      try {
+        msg = JSON.parse(event.nativeEvent.data);
+      } catch {
+        return;
+      }
+      if (msg.type !== 'bot') return;
+
+      const st = botState.current;
+
+      // ── Action confirmations ──
+      if (msg.action === 'select') {
+        if (msg.ok) {
+          addLog(
+            `Selected ${betInfo.current?.type} for ${betInfo.current?.home}-${betInfo.current?.away}`
+          );
+          setBotState(S.OPENING_SLIP);
+          setCooldown(2000);
+          setTimeout(() => inject(JS_OPEN_BETSLIP), 2000);
+        } else {
+          addLog(`Select failed: ${msg.msg}. Rescanning...`);
+          setBotState(S.SCANNING);
+          setCooldown(2000);
+        }
+        syncUi();
+        return;
+      }
+
+      if (msg.action === 'openSlip') {
+        if (msg.ok) {
+          addLog('Betslip opened, setting stake...');
+          setBotState(S.SETTING_STAKE);
+          setCooldown(2500);
+          setTimeout(() => inject(jsSetStake(d.current.stake)), 2500);
+        } else {
+          addLog('Betslip open failed, retrying...');
+          setCooldown(2000);
+          setTimeout(() => inject(JS_OPEN_BETSLIP), 2000);
+        }
+        syncUi();
+        return;
+      }
+
+      if (msg.action === 'stake') {
+        if (msg.ok) {
+          addLog(`Stake set to ${d.current.stake}`);
+          setBotState(S.PLACING);
+          setCooldown(1500);
+          setTimeout(() => inject(JS_PLACE_BET), 1500);
+        } else {
+          addLog(`Stake failed: ${msg.msg}. Retrying...`);
+          setCooldown(2000);
+          setTimeout(() => inject(jsSetStake(d.current.stake)), 2000);
+        }
+        syncUi();
+        return;
+      }
+
+      if (msg.action === 'place') {
+        if (msg.ok) {
+          d.current.roundsBet++;
+          addLog(
+            `BET PLACED! ${d.current.stake} x 2 = ${d.current.stake * 2} total`
+          );
+          setBotState(S.WAIT_LIVE);
+          setCooldown(4000);
+        } else {
+          addLog('Place bet failed, retrying...');
+          setCooldown(2000);
+          setTimeout(() => inject(JS_PLACE_BET), 2000);
+        }
+        syncUi();
+        return;
+      }
+
+      if (msg.action === 'proceed') {
+        setBotState(S.WAIT_RESULTS);
+        setCooldown(3000);
+        syncUi();
+        return;
+      }
+
+      if (
+        msg.action === 'next' ||
+        msg.action === 'dismiss' ||
+        msg.action === 'skip'
+      ) {
+        setBotState(S.WAIT_PAGE);
+        setCooldown(3000);
+        syncUi();
+        return;
+      }
+
+      // ── Page detection ──
+      if (msg.action === 'detect') {
+        const page = msg.page;
+
+        if (page === 'error') {
+          addLog(`Error: ${msg.msg}`);
+          setCooldown(3000);
+          syncUi();
+          return;
+        }
+
+        if (page === 'unknown') {
+          setCooldown(2000);
+          return;
+        }
+
+        // Win popup — handle from any state
+        if (page === 'popup') {
+          addLog(`YOU WON! ${msg.winAmount || ''}`);
+          setBotState(S.GOING_NEXT);
+          inject(JS_DISMISS_POPUP);
+          setCooldown(3000);
+          syncUi();
+          return;
+        }
+
+        // Live page
+        if (page === 'live') {
+          if (
+            [S.WAIT_LIVE, S.SCANNING, S.SKIPPING, S.WAIT_PAGE, S.WAIT_RESULTS].includes(st)
+          ) {
+            addLog('Live play — proceeding to results...');
+            inject(JS_PROCEED);
+            setBotState(S.WAIT_RESULTS);
+            setCooldown(3000);
+          }
+          syncUi();
+          return;
+        }
+
+        // Results page
+        if (page === 'results') {
+          if (
+            [S.WAIT_RESULTS, S.WAIT_LIVE, S.GOING_NEXT, S.SCANNING, S.SKIPPING, S.WAIT_PAGE].includes(st)
+          ) {
+            // Process our bet if we have one
+            if (betInfo.current && msg.fixtures && msg.fixtures.length > 0) {
+              processResults(msg.fixtures);
+            }
+            addLog('Going to next round...');
+            setBotState(S.GOING_NEXT);
+            inject(JS_NEXT_ROUND);
+            setCooldown(3000);
+          }
+          syncUi();
+          return;
+        }
+
+        // Betslip overlay
+        if (page === 'betslip') {
+          if (st === S.OPENING_SLIP || st === S.SETTING_STAKE) {
+            addLog('On betslip, setting stake...');
+            setBotState(S.SETTING_STAKE);
+            inject(jsSetStake(d.current.stake));
+            setCooldown(2000);
+          } else if (st === S.SCANNING || st === S.WAIT_PAGE) {
+            // Unexpected betslip, wait for it to close
+            setCooldown(2000);
+          }
+          syncUi();
+          return;
+        }
+
+        // Match listing
+        if (page === 'listing') {
+          d.current.round = msg.round;
+
+          if (st === S.SCANNING || st === S.WAIT_PAGE) {
+            // Avoid scanning same round twice
+            if (msg.round === lastRound.current) {
+              setCooldown(2000);
+              syncUi();
+              return;
+            }
+
+            if (msg.qualified) {
+              const q = msg.qualified;
+              addLog(
+                `${msg.round}: ${q.home}-${q.away} qualifies! ${q.type} [${q.odds.join(', ')}]`
+              );
+              betInfo.current = {
+                home: q.home,
+                away: q.away,
+                type: q.type,
+                odds: q.odds,
+                groupIdx: q.idx,
+              };
+              lastRound.current = msg.round;
+              setBotState(S.SELECTING);
+              inject(jsSelectOdds(q.idx, q.type));
+              setCooldown(3000);
+            } else {
+              addLog(
+                `${msg.round}: No qualifier (${msg.matches?.length || 0} matches). Skipping...`
+              );
+              lastRound.current = msg.round;
+              setBotState(S.SKIPPING);
+              inject(JS_SKIP_ROUND);
+              setCooldown(3000);
+            }
+          }
+          syncUi();
+          return;
+        }
+      }
+    },
+    [addLog, inject, processResults, setBotState, setCooldown, syncUi]
+  );
+
+  // ─── Tick (polling loop) ────────────────────────────────────
+  const tick = useCallback(() => {
+    const st = botState.current;
+    if (st === S.IDLE) return;
+    if (Date.now() < cooldownUntil.current) return;
+
+    // Only detect during waiting states
+    const waitStates = [
+      S.SCANNING,
+      S.WAIT_PAGE,
+      S.WAIT_LIVE,
+      S.WAIT_RESULTS,
+      S.GOING_NEXT,
+      S.SKIPPING,
+    ];
+    if (waitStates.includes(st)) {
+      inject(JS_DETECT);
+      return;
     }
+
+    // Recovery: if stuck in action state > 15s, force rescan
+    const actionStates = [S.SELECTING, S.OPENING_SLIP, S.SETTING_STAKE, S.PLACING];
+    if (
+      actionStates.includes(st) &&
+      Date.now() - stateStartedAt.current > 15000
+    ) {
+      addLog('Action timed out, rescanning...');
+      setBotState(S.SCANNING);
+      lastRound.current = null;
+      syncUi();
+    }
+  }, [inject, addLog, setBotState, syncUi]);
+
+  // ─── Start / Stop ──────────────────────────────────────────
+  const toggleBot = useCallback(() => {
+    if (running) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+      setBotState(S.IDLE);
+      setRunning(false);
+      addLog('Bot STOPPED');
+      syncUi();
+    } else {
+      setRunning(true);
+      setBotState(S.SCANNING);
+      cooldownUntil.current = 0;
+      lastRound.current = null;
+      addLog('Bot STARTED');
+      syncUi();
+      timerRef.current = setInterval(tick, POLL_MS);
+      setTimeout(() => inject(JS_DETECT), 500);
+    }
+  }, [running, tick, addLog, inject, setBotState, syncUi]);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
   }, []);
 
   const handleLoadEnd = useCallback(() => {
-    setPageLoaded(true);
-    // Auto-run selector debug after page loads
-    setTimeout(() => {
-      webViewRef.current?.injectJavaScript(SELECTOR_DEBUG_JS);
-    }, 3000);
-  }, []);
-
-  const toggleBot = () => {
-    setIsRunning((prev) => !prev);
-    if (!isRunning) {
-      console.log('🟢 Bot STARTED');
-    } else {
-      console.log('🔴 Bot STOPPED');
+    if (botState.current !== S.IDLE) {
+      setCooldown(2000);
     }
-  };
+  }, [setCooldown]);
 
-  const refreshSelectors = () => {
-    webViewRef.current?.injectJavaScript(SELECTOR_DEBUG_JS);
-    console.log('🔄 Refreshing selectors...');
-  };
+  // ─── Render ─────────────────────────────────────────────────
+  const pnlColor = ui.pnl >= 0 ? '#00b894' : '#e94560';
 
   return (
     <SafeAreaView style={styles.container}>
@@ -260,46 +755,56 @@ export default function App() {
 
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>BetKing Virtual</Text>
-        <View style={styles.headerRight}>
-          {pageLoaded && (
-            <TouchableOpacity style={styles.debugBtn} onPress={refreshSelectors}>
-              <Text style={styles.debugBtnText}>Debug</Text>
-            </TouchableOpacity>
-          )}
-          <TouchableOpacity
-            style={[styles.toggleBtn, isRunning ? styles.toggleBtnStop : styles.toggleBtnStart]}
-            onPress={toggleBot}
-          >
-            <Text style={styles.toggleBtnText}>
-              {isRunning ? '■ Stop' : '▶ Start'}
-            </Text>
-          </TouchableOpacity>
-        </View>
+        <Text style={styles.title}>BetKing Virtual</Text>
+        <TouchableOpacity
+          style={[styles.btn, running ? styles.btnStop : styles.btnStart]}
+          onPress={toggleBot}
+        >
+          <Text style={styles.btnText}>
+            {running ? '\u25A0 Stop' : '\u25B6 Start'}
+          </Text>
+        </TouchableOpacity>
       </View>
 
-      {/* Status bar */}
-      <View style={[styles.statusBar, isRunning ? styles.statusRunning : styles.statusStopped]}>
-        <View style={[styles.statusDot, isRunning ? styles.dotGreen : styles.dotGray]} />
+      {/* Status Bar */}
+      <View style={[styles.status, running ? styles.statusOn : styles.statusOff]}>
+        <View style={[styles.dot, running ? styles.dotOn : styles.dotOff]} />
         <Text style={styles.statusText}>
-          {isRunning ? 'Bot Running' : 'Bot Stopped'}
-          {debugInfo ? ` | ${debugInfo.buttons.length} buttons, ${debugInfo.odds.length} odds found` : ''}
+          {ui.state} | {ui.round} | Stake: \u20A6{ui.stake} | P&L:{' '}
+          <Text style={{ color: pnlColor }}>
+            \u20A6{ui.pnl >= 0 ? '+' : ''}
+            {ui.pnl.toFixed(1)}
+          </Text>
+          {' | '}Bets: {ui.roundsBet} W:{ui.wins} L:{ui.losses}
         </Text>
       </View>
 
+      {/* Log */}
+      {ui.log.length > 0 && (
+        <View style={styles.logBox}>
+          <ScrollView style={{ maxHeight: 90 }} nestedScrollEnabled>
+            {ui.log.slice(0, 8).map((entry, i) => (
+              <Text key={i} style={styles.logText} numberOfLines={1}>
+                {entry}
+              </Text>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
       {/* WebView */}
       <WebView
-        ref={webViewRef}
+        ref={wv}
         source={{ uri: BETKING_URL }}
         style={styles.webview}
         onMessage={handleMessage}
         onLoadEnd={handleLoadEnd}
-        javaScriptEnabled={true}
-        domStorageEnabled={true}
-        thirdPartyCookiesEnabled={true}
-        sharedCookiesEnabled={true}
+        javaScriptEnabled
+        domStorageEnabled
+        thirdPartyCookiesEnabled
+        sharedCookiesEnabled
         userAgent="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-        allowsInlineMediaPlayback={true}
+        allowsInlineMediaPlayback
         mediaPlaybackRequiresUserAction={false}
         mixedContentMode="compatibility"
         originWhitelist={['*']}
@@ -308,11 +813,9 @@ export default function App() {
   );
 }
 
+// ─── Styles ──────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#1a1a2e',
-  },
+  container: { flex: 1, backgroundColor: '#1a1a2e' },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -323,73 +826,37 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#0f3460',
   },
-  headerTitle: {
-    color: '#e94560',
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  headerRight: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  debugBtn: {
-    backgroundColor: '#0f3460',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-  },
-  debugBtnText: {
-    color: '#aaa',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  toggleBtn: {
+  title: { color: '#e94560', fontSize: 18, fontWeight: '700' },
+  btn: {
     paddingHorizontal: 16,
     paddingVertical: 6,
     borderRadius: 6,
-    minWidth: 70,
+    minWidth: 80,
     alignItems: 'center',
   },
-  toggleBtnStart: {
-    backgroundColor: '#00b894',
-  },
-  toggleBtnStop: {
-    backgroundColor: '#e94560',
-  },
-  toggleBtnText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  statusBar: {
+  btnStart: { backgroundColor: '#00b894' },
+  btnStop: { backgroundColor: '#e94560' },
+  btnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  status: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    gap: 6,
   },
-  statusRunning: {
-    backgroundColor: '#0a3d2a',
+  statusOn: { backgroundColor: '#0a3d2a' },
+  statusOff: { backgroundColor: '#2d1a1a' },
+  dot: { width: 8, height: 8, borderRadius: 4 },
+  dotOn: { backgroundColor: '#00b894' },
+  dotOff: { backgroundColor: '#555' },
+  statusText: { color: '#bbb', fontSize: 10, flex: 1 },
+  logBox: {
+    backgroundColor: '#0d0d1a',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1a1a2e',
   },
-  statusStopped: {
-    backgroundColor: '#2d1a1a',
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  dotGreen: {
-    backgroundColor: '#00b894',
-  },
-  dotGray: {
-    backgroundColor: '#666',
-  },
-  statusText: {
-    color: '#999',
-    fontSize: 11,
-  },
-  webview: {
-    flex: 1,
-  },
+  logText: { color: '#777', fontSize: 9.5, lineHeight: 13 },
+  webview: { flex: 1 },
 });
